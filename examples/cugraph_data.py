@@ -1,5 +1,4 @@
-import sys
-sys.path += ['/work/pytorch_geometric', '/work/gaas/python']
+#PYTHONPATH=/pytorch_geometric_location:/gaas_location
 # assumes cugraph package is installed
 
 from gaas_client import GaasClient

@@ -4,7 +4,7 @@ sys.path += ['/work/pytorch_geometric', '/work/gaas/python']
 
 from gaas_client import GaasClient
 from torch_geometric.data import Data
-from torch_geometric.data.cugraph import CuGraphData
+from torch_geometric.data.cugraph import GaasData
 import torch
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv
@@ -14,7 +14,7 @@ import numpy as np
 client = GaasClient()
 client.load_csv_as_vertex_data('/tmp/snap/email-Eu-core-department-labels.txt', dtypes=['int32','int32'],vertex_col_name='id', names=['id','dept'])
 client.load_csv_as_edge_data('/tmp/snap/email-Eu-core.txt', ['int32','int32'], ['0','1'])
-cd = CuGraphData(client)
+cd = GaasData(client)
 
 N = 42 # The number of classes
 C = N*4

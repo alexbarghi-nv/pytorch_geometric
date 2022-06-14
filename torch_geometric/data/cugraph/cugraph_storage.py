@@ -132,7 +132,7 @@ class TorchTensorGaasGraphDataProxy(ProxyTensor):
             return self.shape[idx]
 
 
-class CuGraphStorage(GlobalStorage):
+class GaasStorage(GlobalStorage):
     def __init__(self, gaas_client: GaasClient, gaas_graph_id: int, device: TorchDevice=TorchDevice('cpu'), parent=None):
         super().__init__(_parent=parent)
         setattr(self, 'gaas_client', gaas_client)

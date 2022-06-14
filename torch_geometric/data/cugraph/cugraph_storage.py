@@ -27,7 +27,8 @@ class TorchTensorGaasGraphDataProxy(ProxyTensor):
                  data_category: str, 
                  device:TorchDevice=TorchDevice('cpu'),
                  property_keys: List[str]=None,
-                 transposed: bool=False):
+                 transposed: bool=False,
+                 dtype: torch.dtype=torch.float32):
         if data_category not in self._data_categories:
             raise ValueError("data_category must be one of "
                              f"{self._data_categories}, got {data_category}")
@@ -44,6 +45,7 @@ class TorchTensorGaasGraphDataProxy(ProxyTensor):
         self.__device = device
         self.__property_keys = property_keys
         self.__transposed = transposed
+        self.dtype = dtype
 
     def __getitem__(self, index: int):
         """
@@ -71,35 +73,44 @@ class TorchTensorGaasGraphDataProxy(ProxyTensor):
 
         if self.__transposed:
             torch_data = torch.from_numpy(data.T)[index].to(self.device)
-            if self.__property_keys[index] in EDGE_KEYS:
-                torch_data = torch_data.to(torch.long)
-            elif self.__property_keys[index] in VERTEX_KEYS:
-                torch_data = torch_data.to(torch.long)
         else:
             # FIXME handle non-numeric datatypes
-            torch_data = torch.from_numpy(data).to(torch.float32)
+            torch_data = torch.from_numpy(data)
 
-        return torch_data.to(self.__device)
+        return torch_data.to(self.dtype).to(self.__device)
 
     @property
     def shape(self) -> torch.Size:
+        num_properties = len(self.__property_keys)
+
         if self.__category == "edge":
+            # Handle Edge properties
+            if num_properties == 0:
+                return torch.Size(
+                    self.__client.get_graph_edge_dataframe_shape(self.__graph_id)
+                )
+
             num_edges = self.__client.get_num_edges(self.__graph_id)
             return torch.Size([len(self.__property_keys), num_edges])
-        else:
+        elif self.__category == "vertex":
+            # Handle Vertex properties
+            if num_properties == 0:
+                return torch.Size(
+                    self.__client.get_graph_vertex_dataframe_shape(self.__graph_id)
+                )
+
             num_vertices = self.__client.get_num_vertices(self.__graph_id)
-            return torch.Size([len(self.__property_keys), num_vertices])
-    
-    @property
-    def dtype(self) -> Any:
-        if self.__category == 'edge':
-            return torch.long
-        else:
-            return torch.float32
+            return torch.Size([num_properties, num_vertices])
+
+        raise AttributeError(f'invalid category {self.__category}')
 
     @property
     def device(self) -> TorchDevice:
         return self.__device
+    
+    @property
+    def is_cuda(self) -> bool:
+        return self.__device._type == 'cuda'
 
     def to(self, to_device: TorchDevice):
         return TorchTensorGaasGraphDataProxy(
@@ -108,7 +119,7 @@ class TorchTensorGaasGraphDataProxy(ProxyTensor):
             self.__category, 
             to_device, 
             property_keys=self.__property_keys, 
-            transposed=self.transposed
+            transposed=self.__transposed
         )
     
     def dim(self) -> int:
@@ -122,12 +133,14 @@ class TorchTensorGaasGraphDataProxy(ProxyTensor):
 
 
 class CuGraphStorage(GlobalStorage):
-    def __init__(self, gaas_client: GaasClient, gaas_graph_id: int, device: TorchDevice=TorchDevice('cpu')):
-        super().__init__()
+    def __init__(self, gaas_client: GaasClient, gaas_graph_id: int, device: TorchDevice=TorchDevice('cpu'), parent=None):
+        super().__init__(_parent=parent)
         setattr(self, 'gaas_client', gaas_client)
         setattr(self, 'gaas_graph_id', gaas_graph_id)
-        setattr(self, 'node_index', TorchTensorGaasGraphDataProxy(gaas_client, gaas_graph_id, 'vertex', device))
-        setattr(self, 'edge_index', TorchTensorGaasGraphDataProxy(gaas_client, gaas_graph_id, 'edge', device, transposed=True))
+        setattr(self, 'node_index', TorchTensorGaasGraphDataProxy(gaas_client, gaas_graph_id, 'vertex', device, dtype=torch.long))
+        setattr(self, 'edge_index', TorchTensorGaasGraphDataProxy(gaas_client, gaas_graph_id, 'edge', device, transposed=True, dtype=torch.long))
+        setattr(self, 'x', TorchTensorGaasGraphDataProxy(gaas_client, gaas_graph_id, 'vertex', device, dtype=torch.float, property_keys=[]))
+    
     
     @property
     def num_nodes(self) -> int:
@@ -145,11 +158,19 @@ class CuGraphStorage(GlobalStorage):
     @property
     def num_edges(self) -> int:
         return self.gaas_client.get_num_edges(self.gaas_graph_id)
+
+    def is_node_attr(self, key: str) -> bool:
+        if key == 'x':
+            return True
+        return self.gaas_client.is_vertex_property(key, self.gaas_graph_id)
+
+    def is_edge_attr(self, key: str) -> bool:
+        return self.gaas_client.is_edge_property(key, self.gaas_graph_id)
     
     def __getattr__(self, key: str) -> Any:
         if key in self:
             return self[key]
-        else:
+        elif self.gaas_client.is_vertex_property(key, self.gaas_graph_id):
             return TorchTensorGaasGraphDataProxy(
                 self.gaas_client,
                 self.gaas_graph_id,
@@ -157,3 +178,13 @@ class CuGraphStorage(GlobalStorage):
                 self.node_index.device,
                 [key]
             )
+        elif self.gaas_client.is_edge_property(key, self.gaas_graph_id):
+            return TorchTensorGaasGraphDataProxy(
+                self.gaas_client,
+                self.gaas_graph_id,
+                'edge',
+                self.edge_index.device,
+                [key]
+            )
+        
+        raise AttributeError(key)

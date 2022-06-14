@@ -24,7 +24,7 @@ from torch_geometric.data.storage import (
     NodeStorage,
 )
 from torch_geometric.deprecation import deprecated
-from torch_geometric.typing import EdgeType, NodeType, OptTensor
+from torch_geometric.typing import EdgeType, NodeType, OptTensor, ProxyTensor
 from torch_geometric.utils import subgraph
 
 
@@ -282,7 +282,7 @@ class BaseData(object):
         stored on the GPU, :obj:`False` otherwise."""
         for store in self.stores:
             for value in store.values():
-                if isinstance(value, Tensor) and value.is_cuda:
+                if isinstance(value, (Tensor, ProxyTensor)) and value.is_cuda:
                     return True
         return False
 

@@ -1,3 +1,5 @@
+import torch
+from typing import Union
 from torch import device as TorchDevice
 from torch_geometric.data import Data
 from torch_geometric.data.cugraph.cugraph_storage import CuGraphStorage
@@ -10,12 +12,23 @@ class CuGraphData(Data):
         super().__init__()
         
         # have to access __dict__ here to ensure the store is a CuGraphStorage
-        self.__dict__['_store'] = CuGraphStorage(gaas_client, graph_id, device=device)
+        storage = CuGraphStorage(gaas_client, graph_id, device=device, parent=self)
+        print('parent', storage._parent)
+        self.__dict__['_store'] = storage
         self.device = device
     
     def to(self, to_device: TorchDevice) -> Data:
         return CuGraphData(
             self.gaas_client,
             self.gaas_graph_id,
-            to_device
+            TorchDevice(to_device)
         )
+
+    def cuda(self):
+        return self.to('cuda')
+    
+    def cpu(self):
+        return self.to('cpu')
+    
+    def stores_as(self, data: 'Data'):
+        return self

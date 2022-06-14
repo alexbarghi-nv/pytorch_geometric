@@ -8,7 +8,7 @@ from torch_sparse import SparseTensor
 
 from torch_geometric.data import Data, HeteroData
 from torch_geometric.data.storage import EdgeStorage, NodeStorage
-from torch_geometric.typing import EdgeType, OptTensor
+from torch_geometric.typing import EdgeType, OptTensor, ProxyTensor
 
 
 def index_select(value: Tensor, index: Tensor, dim: int = 0) -> Tensor:
@@ -21,6 +21,10 @@ def index_select(value: Tensor, index: Tensor, dim: int = 0) -> Tensor:
         numel = math.prod(size)
         storage = value.storage()._new_shared(numel)
         out = value.new(storage).view(size)
+
+    if isinstance(value, ProxyTensor):
+        value = value[-1]
+
     return torch.index_select(value, dim, index, out=out)
 
 

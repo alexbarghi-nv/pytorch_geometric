@@ -2,7 +2,7 @@ import torch
 from typing import Union
 from torch import device as TorchDevice
 from torch_geometric.data import Data
-from torch_geometric.data.cugraph.cugraph_storage import GaasStorage
+from torch_geometric.data.cugraph.gaas_storage import GaasStorage
 
 from gaas_client.client import GaasClient
 from gaas_client.defaults import graph_id as DEFAULT_GRAPH_ID

@@ -3,7 +3,7 @@
 
 from gaas_client import GaasClient
 from torch_geometric.data import Data
-from torch_geometric.data.cugraph import GaasData
+from torch_geometric.cugraph.data import GaasData
 import torch
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv

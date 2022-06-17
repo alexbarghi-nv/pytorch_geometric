@@ -4,7 +4,7 @@ from typing import Any, Callable, Iterator, List, Optional, Tuple, Union
 import torch
 from torch import Tensor
 
-from torch_geometric.data import Data, HeteroData
+from torch_geometric.data import Data, HeteroData, RemoteData
 from torch_geometric.loader.base import DataLoaderIterator
 from torch_geometric.loader.utils import (
     edge_type_to_str,
@@ -34,7 +34,18 @@ class NeighborSampler:
         self.directed = directed
         self.node_time = None
 
-        if isinstance(data, Data):
+        if isinstance(data, RemoteData):
+            #TODO temporal support
+            if time_attr is not None:
+                # TODO `time_attr` support for homogeneous graphs
+                raise ValueError(
+                    f"'time_attr' attribute not yet supported for "
+                    f"'{data.__class__.__name__}' object")
+
+            self.raw_data = data
+            assert isinstance(num_neighbors, (list, tuple))
+
+        elif isinstance(data, Data):
             if time_attr is not None:
                 # TODO `time_attr` support for homogeneous graphs
                 raise ValueError(

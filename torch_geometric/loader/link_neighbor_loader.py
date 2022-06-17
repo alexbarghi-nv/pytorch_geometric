@@ -3,7 +3,7 @@ from typing import Any, Callable, Iterator, List, Optional, Tuple, Union
 import torch
 from torch import Tensor
 
-from torch_geometric.data import Data, HeteroData
+from torch_geometric.data import Data, HeteroData, RemoteData
 from torch_geometric.loader.base import DataLoaderIterator
 from torch_geometric.loader.neighbor_loader import NeighborSampler
 from torch_geometric.loader.utils import filter_data, filter_hetero_data
@@ -65,22 +65,34 @@ class LinkNeighborSampler(NeighborSampler):
             edge_label_index, edge_label)
 
         if issubclass(self.data_cls, Data):
-            sample_fn = torch.ops.torch_sparse.neighbor_sample
-
             query_nodes = edge_label_index.view(-1)
             query_nodes, reverse = query_nodes.unique(return_inverse=True)
             edge_label_index = reverse.view(2, -1)
 
-            node, row, col, edge = sample_fn(
-                self.colptr,
-                self.row,
-                query_nodes,
-                self.num_neighbors,
-                self.replace,
-                self.directed,
-            )
+            if issubclass(self.data_cls, RemoteData):
+                # if this is remote, then raw_data should be set
+                kdata = self.raw_data.neighbor_sample(
+                    query_nodes,
+                    self.num_neighbors,
+                    self.replace,
+                    self.directed
+                )
+                
+                return kdata, edge_label_index, edge_label
+            else:
+                sample_fn = torch.ops.torch_sparse.neighbor_sample
 
-            return node, row, col, edge, edge_label_index, edge_label
+                print('query_nodes', query_nodes)
+                node, row, col, edge = sample_fn(
+                    self.colptr,
+                    self.row,
+                    query_nodes,
+                    self.num_neighbors,
+                    self.replace,
+                    self.directed,
+                )
+
+                return node, row, col, edge, edge_label_index, edge_label
 
         elif issubclass(self.data_cls, HeteroData):
             sample_fn = torch.ops.torch_sparse.hetero_neighbor_sample
@@ -279,9 +291,13 @@ class LinkNeighborLoader(torch.utils.data.DataLoader):
 
     def transform_fn(self, out: Any) -> Union[Data, HeteroData]:
         if isinstance(self.data, Data):
-            node, row, col, edge, edge_label_index, edge_label = out
-            data = filter_data(self.data, node, row, col, edge,
-                               self.neighbor_sampler.perm)
+            if isinstance(self.data, RemoteData):
+                data, edge_label_index, edge_label = out
+            else:
+                node, row, col, edge, edge_label_index, edge_label = out
+                data = filter_data(self.data, node, row, col, edge,
+                                self.neighbor_sampler.perm)
+            
             data.edge_label_index = edge_label_index
             if edge_label is not None:
                 data.edge_label = edge_label

@@ -27,6 +27,27 @@ from torch_geometric.deprecation import deprecated
 from torch_geometric.typing import EdgeType, NodeType, OptTensor, ProxyTensor
 from torch_geometric.utils import subgraph
 
+class RemoteData(object):
+    def neighbor_sample(
+            self,
+            index: Tensor,
+            num_neighbors: Tensor,
+            replace: bool,
+            directed: bool) -> Any:
+        raise NotImplementedError
+    
+    def extract_subgraph(
+            self, 
+            node: Tensor, 
+            edges: Tensor, 
+            enumerated_edges: Tensor,
+            perm: Tensor) -> Any:
+        """
+        node: Nodes to extract
+        edges: Edges to extract (0: src, 1: dst)
+        enumerated_edges: Numbered edges to extract
+        """
+        raise NotImplementedError
 
 class BaseData(object):
     def __getattr__(self, key: str) -> Any:

@@ -53,6 +53,7 @@ class LinkNeighborSampler(NeighborSampler):
         return edge_label_index, edge_label
 
     def __call__(self, query: List[Tuple[Tensor]]):
+        print('in call')
         query = [torch.tensor(s) for s in zip(*query)]
         if len(query) == 2:
             edge_label_index = torch.stack(query, dim=0)

@@ -22,9 +22,9 @@ class GaasData(Data, RemoteData):
         self.ephemeral = ephemeral
 
     def __del__(self):
-        #if self.ephemeral:
-        #    self.gaas_client.delete_graph(self.gaas_graph_id)
-        pass
+        print('destroying a gaasdata object')
+        if self.ephemeral:
+            self.gaas_client.delete_graph(self.gaas_graph_id)
     
     def to(self, to_device: TorchDevice) -> Data:
         return GaasData(

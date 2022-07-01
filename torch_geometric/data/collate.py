@@ -1,14 +1,14 @@
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
+from functools import reduce
 from typing import Any, List, Optional, Tuple, Union
 
 import torch
 from torch import Tensor
 from torch_sparse import SparseTensor, cat
 
-from torch_geometric.data.data import BaseData
+from torch_geometric.data.data import BaseData, Data, RemoteData
 from torch_geometric.data.storage import BaseStorage, NodeStorage
-
 
 def collate(
     cls,
@@ -24,12 +24,16 @@ def collate(
     # In addition, `collate` can handle nested data structures such as
     # dictionaries and lists.
 
+    print('collate')
     if not isinstance(data_list, (list, tuple)):
         # Materialize `data_list` to keep the `_parent` weakref alive.
         data_list = list(data_list)
 
-    if cls != data_list[0].__class__:
-        out = cls(_base_cls=data_list[0].__class__)  # Dynamic inheritance.
+    req_cls = data_list[0].__class__
+    if cls != req_cls:
+        if issubclass(req_cls, RemoteData):
+            req_cls = Data
+        out = cls(_base_cls=req_cls)  # Dynamic inheritance.
     else:
         out = cls()
 
@@ -43,9 +47,13 @@ def collate(
     # i.e. `key_to_store_list = { key: [store_1, store_2, ...], ... }`:
     key_to_stores = defaultdict(list)
     for data in data_list:
+        print('graph:', data.graph)
         for store in data.stores:
+            print('store:', store)
+            print('key:', store._key)
             key_to_stores[store._key].append(store)
 
+    print('k2s:', key_to_stores)
     # With this, we iterate over each list of storage objects and recursively
     # collate all its attributes into a unified representation:
 
@@ -62,12 +70,12 @@ def collate(
     for out_store in out.stores:
         key = out_store._key
         stores = key_to_stores[key]
-        for attr in stores[0].keys():
+        for attr in reduce(lambda s,t: set(s).union(set(t)), [st.keys() for st in stores], []):
 
             if attr in exclude_keys:  # Do not include top-level attribute.
                 continue
 
-            values = [store[attr] for store in stores]
+            values = [store[attr] for store in stores if attr in set(store.keys())]
 
             # The `num_nodes` attribute needs special treatment, as we need to
             # sum their values up instead of merging them to a list:
@@ -81,12 +89,14 @@ def collate(
                 continue
 
             # Collate attributes into a unified representation:
+            print('92')
             value, slices, incs = _collate(attr, values, data_list, stores,
                                            increment)
 
             if isinstance(value, Tensor) and value.is_cuda:
                 device = value.device
 
+            print('99')
             out_store[attr] = value
             if key is not None:
                 slice_dict[key][attr] = slices
@@ -95,6 +105,7 @@ def collate(
                 slice_dict[attr] = slices
                 inc_dict[attr] = incs
 
+            print('108')
             # Add an additional batch vector for the given attribute:
             if (attr in follow_batch and isinstance(slices, Tensor)
                     and slices.dim() == 1):
@@ -103,9 +114,13 @@ def collate(
                 out_store[f'{attr}_batch'] = batch
 
         # In case the storage holds node, we add a top-level batch vector it:
-        if (add_batch and isinstance(stores[0], NodeStorage)
-                and stores[0].can_infer_num_nodes):
-            repeats = [store.num_nodes for store in stores]
+        repeats = []
+        for store in stores:
+            if (add_batch and isinstance(store, NodeStorage)
+                and store.can_infer_num_nodes):
+                repeats.append(store.num_nodes)
+        
+        if len(repeats) > 0:
             out_store.batch = repeat_interleave(repeats, device=device)
             out_store.ptr = cumsum(torch.tensor(repeats, device=device))
 

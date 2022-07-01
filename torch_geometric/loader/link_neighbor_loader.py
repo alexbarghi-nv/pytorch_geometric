@@ -15,7 +15,7 @@ class LinkNeighborSampler(NeighborSampler):
         super().__init__(data, *args, **kwargs)
         self.neg_sampling_ratio = neg_sampling_ratio
 
-        if issubclass(self.data_cls, Data):
+        if issubclass(self.data_cls, (Data, RemoteData)):
             self.num_src_nodes = self.num_dst_nodes = data.num_nodes
         else:
             self.num_src_nodes = data[self.input_type[0]].num_nodes
@@ -65,7 +65,7 @@ class LinkNeighborSampler(NeighborSampler):
         edge_label_index, edge_label = self._create_label(
             edge_label_index, edge_label)
 
-        if issubclass(self.data_cls, Data):
+        if issubclass(self.data_cls, (Data, RemoteData)):
             query_nodes = edge_label_index.view(-1)
             query_nodes, reverse = query_nodes.unique(return_inverse=True)
             edge_label_index = reverse.view(2, -1)
@@ -291,7 +291,7 @@ class LinkNeighborLoader(torch.utils.data.DataLoader):
                          collate_fn=self.neighbor_sampler, **kwargs)
 
     def transform_fn(self, out: Any) -> Union[Data, HeteroData]:
-        if isinstance(self.data, Data):
+        if isinstance(self.data, (Data, RemoteData)):
             if isinstance(self.data, RemoteData):
                 data, edge_label_index, edge_label = out
             else:
@@ -347,7 +347,7 @@ def get_edge_label_index(
     edge_label_index: InputEdges,
 ) -> Tuple[Optional[str], Tensor]:
     edge_type = None
-    if isinstance(data, Data):
+    if isinstance(data, (Data, RemoteData)):
         if edge_label_index is None:
             return None, data.edge_index
         return None, edge_label_index

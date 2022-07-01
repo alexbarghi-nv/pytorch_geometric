@@ -10,7 +10,7 @@ from torch_geometric.data.storage import GlobalStorage
 from gaas_client.client import GaasClient
 
 EDGE_KEYS = ["_SRC_", "_DST_"]
-VERTEX_KEYS = ["_VERTEX_ID_"]
+VERTEX_KEYS = ["_VERTEX_"]
 
 
 class TorchTensorGaasGraphDataProxy(ProxyTensor):

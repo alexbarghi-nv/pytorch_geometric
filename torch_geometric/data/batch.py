@@ -64,6 +64,8 @@ class Batch(metaclass=DynamicInheritance):
         In addition, creates assignment vectors for each key in
         :obj:`follow_batch`.
         Will exclude any keys given in :obj:`exclude_keys`."""
+        from torch_geometric.data import RemoteData
+        print('class:', isinstance(cls, RemoteData))
 
         batch, slice_dict, inc_dict = collate(
             cls,

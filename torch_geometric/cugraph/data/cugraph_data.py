@@ -2,7 +2,7 @@ from typing import Any, Union, List
 from torch_geometric.data.storage import BaseStorage, EdgeStorage, NodeStorage
 
 import torch
-from torch_geometric.data.data import BaseData, RemoteData
+from torch_geometric.data.data import BaseData, RemoteData, Data
 from torch import device as TorchDevice
 from torch import Tensor
 from torch_sparse import SparseTensor
@@ -15,7 +15,7 @@ import cudf
 import cugraph
 from cugraph import Graph
 from cugraph.experimental import PropertyGraph
-from cugraph.structure.number_map import NumberMap
+from datetime import datetime
 
 
 class CuGraphData(BaseData, RemoteData):
@@ -28,10 +28,13 @@ class CuGraphData(BaseData, RemoteData):
         PropertyGraph.vertex_id_col_name,
         PropertyGraph.weight_col_name
     ] 
-    def __init__(self, graph:Union[Graph,PropertyGraph], device:TorchDevice=TorchDevice('cpu'), node_storage:CudfNodeStorage=None, edge_storage:CudfEdgeStorage=None):
+    def __init__(self, graph:Union[Graph,PropertyGraph], device:TorchDevice=TorchDevice('cpu'), node_storage:CudfNodeStorage=None, edge_storage:CudfEdgeStorage=None, **kwargs):
         super().__init__()
         
         is_property_graph = isinstance(graph, PropertyGraph)
+        if is_property_graph and graph._EXPERIMENTAL__PropertyGraph__vertex_prop_dataframe.index.name != PropertyGraph.vertex_col_name:
+            graph._EXPERIMENTAL__PropertyGraph__vertex_prop_dataframe = graph._EXPERIMENTAL__PropertyGraph__vertex_prop_dataframe.set_index(PropertyGraph.vertex_col_name)
+
         if node_storage is None:
             self.__node_storage = CudfNodeStorage(
                 dataframe=graph._vertex_prop_dataframe if is_property_graph \
@@ -42,7 +45,8 @@ class CuGraphData(BaseData, RemoteData):
                 device=device, 
                 parent=self, 
                 reserved_keys=CuGraphData.reserved_keys,
-                vertex_col_name=PropertyGraph.vertex_col_name
+                vertex_col_name=PropertyGraph.vertex_col_name,
+                **kwargs
             )
         else:
             self.__node_storage = node_storage
@@ -54,14 +58,30 @@ class CuGraphData(BaseData, RemoteData):
                 parent=self, 
                 reserved_keys=CuGraphData.reserved_keys,
                 src_col_name=PropertyGraph.src_col_name if is_property_graph else 'src',
-                dst_col_name=PropertyGraph.dst_col_name if is_property_graph else 'dst'
+                dst_col_name=PropertyGraph.dst_col_name if is_property_graph else 'dst',
+                **kwargs
             )
         else:
             self.__edge_storage = edge_storage
 
         self.graph = graph
         self.device = device
+        self.__extracted_subgraph = None
     
+    @property
+    def _extracted_subgraph(self) -> cugraph.Graph:
+        if self.__extracted_subgraph is None:
+            self.__extracted_subgraph = cugraph.Graph(directed=True)
+            self.__extracted_subgraph.from_cudf_edgelist(
+                self.graph._edge_prop_dataframe.join(cudf.Series(cupy.ones(len(self.graph._edge_prop_dataframe), dtype='float32'), name='weight')),
+                source=PropertyGraph.src_col_name,
+                destination=PropertyGraph.dst_col_name,
+                edge_attr='weight',
+                renumber=False,
+            )
+
+        return self.__extracted_subgraph
+
     def to(self, to_device: TorchDevice) -> BaseData:
         return CuGraphData(
             graph=self.graph,
@@ -91,6 +111,8 @@ class CuGraphData(BaseData, RemoteData):
             replace: bool,
             directed: bool) -> Any:
         
+        start_time = datetime.now()
+
         if not isinstance(index, Tensor):
             index = Tensor(index).to(torch.long)
         if not isinstance(num_neighbors, Tensor):
@@ -113,14 +135,7 @@ class CuGraphData(BaseData, RemoteData):
         if is_property_graph:
             # FIXME resolve the renumbering issue with extract_subgraph so it can be used here
             #G = self.graph.extract_subgraph(add_edge_data=False, default_edge_weight=1.0, allow_multi_edges=True)
-            G = cugraph.Graph(directed=directed)
-            G.from_cudf_edgelist(
-                self.graph._edge_prop_dataframe.join(cudf.Series(cupy.ones(len(self.graph._edge_prop_dataframe), dtype='float32'), name='weight')),
-                source=PropertyGraph.src_col_name,
-                destination=PropertyGraph.dst_col_name,
-                edge_attr='weight',
-                renumber=False
-            )
+            G = self._extracted_subgraph
         else:
             if self.graph.is_directed() == directed:
                 G = self.graph
@@ -129,6 +144,7 @@ class CuGraphData(BaseData, RemoteData):
             else:
                 G = self.graph.to_undirected()
 
+        sampling_start = datetime.now()
         index = cudf.Series(index)
         sampling_results = cugraph.uniform_neighbor_sample(
             G,
@@ -137,36 +153,57 @@ class CuGraphData(BaseData, RemoteData):
             replace
         )
 
-        nodes_of_interest = sampling_results.destinations
-        nodes_of_interest = cudf.concat([nodes_of_interest, index])
-        nodes_of_interest.reset_index(drop=True, inplace=True)
+        end_time = datetime.now()
+        td = end_time - start_time
+        print('first half', td.total_seconds())
+        print('sampling', (end_time - sampling_start).total_seconds())
+
+        start_time = datetime.now()
+
+        nodes_of_interest = cudf.concat([sampling_results.destinations, sampling_results.sources]).unique()
+        noi_tensor = torch.from_dlpack(nodes_of_interest.astype('long').to_dlpack())
+
+        renumber_df = cudf.Series(cudf.RangeIndex(len(nodes_of_interest)), index=nodes_of_interest)
+        src = torch.from_dlpack(renumber_df[sampling_results.sources].to_cupy(dtype='long').toDlpack())
+        dst = torch.from_dlpack(renumber_df[sampling_results.destinations].to_cupy(dtype='long').toDlpack())
 
         if is_property_graph:
-            vertex_properties = self.graph._vertex_prop_dataframe.iloc[nodes_of_interest]
-            vertex_properties.reset_index(drop=True, inplace=True)
-            prop_names = self.__remove_internal_columns(vertex_properties.columns.to_list())
-            vertex_properties = vertex_properties[prop_names]
-            vertex_properties['original_vertex_id'] = nodes_of_interest
+            iloc_start = datetime.now()
 
-            elist, number_map = NumberMap.renumber(
-                sampling_results, 'sources', 'destinations', store_transposed=False
+            sampled_y = self.y
+            if sampled_y is not None:
+                sampled_y = sampled_y[noi_tensor]
+            
+            sampled_x = self.x[noi_tensor]
+            '''
+            sampled_x = torch.from_dlpack(
+                self.__node_storage._data[self.__node_storage._feature_names].iloc[nodes_of_interest.to_cupy(dtype='int32')].to_cupy(dtype='float32').toDlpack()
             )
-            source_colname = number_map.renumbered_src_col_name
-            dest_colname = number_map.renumbered_dst_col_name
+            '''
 
-            vertex_properties['original_vertex_id'] = \
-                number_map.to_internal_vertex_id(vertex_properties, ['original_vertex_id'])
+            iloc_end = datetime.now()
+            print('iloc time:', (iloc_end - iloc_start).total_seconds())
 
-            new_G = PropertyGraph()
-            new_G.add_edge_data(elist, vertex_col_names=[source_colname, dest_colname])
-            new_G.add_vertex_data(vertex_properties, vertex_col_name='original_vertex_id', property_columns=prop_names)
+            data = Data(
+                x=sampled_x, 
+                edge_index=torch.concat([dst,src]).reshape((2,src.shape[0])),
+                edge_attr=None,
+                y=sampled_y
+            )
             
         else:
-            new_G = cugraph.Graph()
-            # FIXME make sure this works with dask_cudf
-            new_G.from_cudf_edgelist(sampling_results, source='sources', destination='destinations', renumber=True)
+            data = Data(
+                x=None,
+                edge_index=torch.concat([dst,src]).reshape((2,src.shape[0])),
+                edge_attr=None,
+                y=None
+            )
 
-        return CuGraphData(new_G, device=self.device)
+        end_time = datetime.now()
+        td = end_time - start_time
+        print('second half', td.total_seconds())
+
+        return data
 
     def __remove_internal_columns(self, input_cols, additional_columns_to_remove=[]):
         internal_columns = CuGraphData.reserved_keys + additional_columns_to_remove

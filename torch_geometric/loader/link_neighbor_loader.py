@@ -68,6 +68,7 @@ class LinkNeighborSampler(NeighborSampler):
         if issubclass(self.data_cls, (Data, RemoteData)):
             query_nodes = edge_label_index.view(-1)
             query_nodes, reverse = query_nodes.unique(return_inverse=True)
+            print('query_nodes', query_nodes.shape)
             edge_label_index = reverse.view(2, -1)
 
             if issubclass(self.data_cls, RemoteData):
@@ -83,7 +84,6 @@ class LinkNeighborSampler(NeighborSampler):
             else:
                 sample_fn = torch.ops.torch_sparse.neighbor_sample
 
-                print('query_nodes', query_nodes)
                 node, row, col, edge = sample_fn(
                     self.colptr,
                     self.row,

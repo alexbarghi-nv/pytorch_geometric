@@ -9,7 +9,7 @@ from torch_geometric.data.storage import GlobalStorage
 
 from gaas_client.client import GaasClient
 
-EDGE_KEYS = ["_SRC_", "_DST_"]
+EDGE_KEYS = ["_DST_", "_SRC_"] # reversed order in PyG
 VERTEX_KEYS = ["_VERTEX_"]
 
 

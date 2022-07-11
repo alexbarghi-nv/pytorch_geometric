@@ -14,11 +14,21 @@ class CudfStorage():
     """
         Should be compatible with both cudf and dask_cudf
     """
-    def __init__(self, dataframe: cudf.DataFrame=cudf.DataFrame(), device: TorchDevice=TorchDevice('cpu'), parent:Any=None, reserved_keys:list=[], **kwargs):
+    def __init__(
+                 self, 
+                 dataframe: cudf.DataFrame=cudf.DataFrame(), 
+                 device: TorchDevice=TorchDevice('cpu'), 
+                 parent:Any=None, 
+                 reserved_keys:list=[], 
+                 cached_keys:list=['x','y'],
+                 **kwargs):
         self._data = dataframe
         self._parent = parent
         self.__device = device
         self.__reserved_keys = list(reserved_keys)
+        self.__cached_keys = list(cached_keys)
+        self.__x = None
+        self.__feature_names=None
     
     @property
     def device(self):
@@ -27,6 +37,17 @@ class CudfStorage():
     @property
     def _reserved_keys(self):
         return self.__reserved_keys
+
+    @property
+    def _cached_keys(self):
+        return self.__cached_keys
+
+    @property
+    def _feature_names(self) -> List[str]:
+        if self.__feature_names is None:
+            self.__feature_names = self.__remove_internal_columns(self._data.columns, ['y'])
+        
+        return self.__feature_names
 
     def to(self, to_device: TorchDevice):
         return CudfStorage(
@@ -41,21 +62,29 @@ class CudfStorage():
             return self.__dict__[key]
 
         elif key in self._data:
-            t = torch.from_dlpack(self._data[key].to_dlpack())
-            if self.__device != t.device:
-                t = t.to(self.__device)
-            return t
+            if ('__' + key) not in self.__dict__:
+                t = torch.from_dlpack(self._data[key].to_dlpack())
+                if self.__device != t.device:
+                    t = t.to(self.__device)
+                if key in self.__cached_keys:
+                    self.__dict__['__' + key] = t
+                return t
+            return self.__dict__['__' + key]
 
         elif key == 'x':
-            all_keys = list(self._data.columns)
-            for k in self.__reserved_keys + ['y']:
-                if k in list(all_keys):
-                    all_keys.remove(k)
-            
-            t = torch.from_dlpack(self._data[all_keys].to_dlpack()).to(torch.float)
-            if self.__device != t.device:
-                t = t.to(self.__device)
-            return t
+            if self.__x is None:
+                all_keys = list(self._data.columns)
+                for k in self.__reserved_keys + ['y']:
+                    if k in list(all_keys):
+                        all_keys.remove(k)
+                
+                x = torch.from_dlpack(self._data[all_keys].to_cupy(dtype='float32').toDlpack())
+                if self.__device != x.device:
+                    x = x.to(self.__device)
+                if 'x' in self.__cached_keys:
+                    self.__x = x
+                return x
+            return self.__x
 
         raise AttributeError(key)
     
@@ -75,13 +104,25 @@ class CudfStorage():
         
         return feature_count
     
+    def __remove_internal_columns(self, input_cols, additional_columns_to_remove=[]):
+        internal_columns = self.__reserved_keys + additional_columns_to_remove
+
+        # Create a list of user-visible columns by removing the internals while
+        # preserving order
+        output_cols = list(input_cols)
+        for col_name in internal_columns:
+            if col_name in output_cols:
+                output_cols.remove(col_name)
+        
+        return output_cols
+    
     def __repr__(self) -> str:
         return f'cudf storage ({self.shape[0]}x{self.shape[1]})'
             
 
 class CudfNodeStorage(CudfStorage, NodeStorage):
-    def __init__(self, dataframe: cudf.DataFrame, device: TorchDevice=TorchDevice('cpu'), parent:Any=None, vertex_col_name='v', reserved_keys:list=[], key=None):
-        super().__init__(dataframe=dataframe, device=device, parent=parent, reserved_keys=reserved_keys)
+    def __init__(self, dataframe: cudf.DataFrame, device: TorchDevice=TorchDevice('cpu'), parent:Any=None, vertex_col_name='v', reserved_keys:list=[], key=None, **kwargs):
+        super().__init__(dataframe=dataframe, device=device, parent=parent, reserved_keys=reserved_keys, **kwargs)
 
         self.__vertex_col_name = vertex_col_name
         self.__key = key
@@ -105,6 +146,9 @@ class CudfNodeStorage(CudfStorage, NodeStorage):
     def node_index(self) -> Tensor:
         return self[self.__vertex_col_name].to(torch.long)
     
+    def node_feature_names(self) -> List[str]:
+        return self._feature_names
+    
     def to(self, to_device: TorchDevice):
         return CudfNodeStorage(
             dataframe=self._data, 
@@ -112,7 +156,8 @@ class CudfNodeStorage(CudfStorage, NodeStorage):
             parent=self._parent(), 
             reserved_keys=self._reserved_keys,
             vertex_col_name=self.__vertex_col_name,
-            key=self.__key
+            key=self.__key,
+            cached_keys=self._cached_keys
         )
 
     def keys(self, *args):
@@ -140,8 +185,8 @@ class CudfNodeStorage(CudfStorage, NodeStorage):
 
     
 class CudfEdgeStorage(CudfStorage, EdgeStorage):
-    def __init__(self, dataframe: cudf.DataFrame, device: TorchDevice=TorchDevice('cpu'), parent:Any=None, src_col_name='src', dst_col_name='dst', reserved_keys:list=[], key=None):
-        super().__init__(dataframe=dataframe, device=device, parent=parent, reserved_keys=reserved_keys)
+    def __init__(self, dataframe: cudf.DataFrame, device: TorchDevice=TorchDevice('cpu'), parent:Any=None, src_col_name='src', dst_col_name='dst', reserved_keys:list=[], key=None, **kwargs):
+        super().__init__(dataframe=dataframe, device=device, parent=parent, reserved_keys=reserved_keys, **kwargs)
 
         self.__src_col_name = src_col_name
         self.__dst_col_name = dst_col_name
@@ -165,8 +210,12 @@ class CudfEdgeStorage(CudfStorage, EdgeStorage):
         dst = self[self.__dst_col_name].to(torch.long)
         assert src.shape[0] == dst.shape[0]
 
-        return torch.concat([src,dst]).reshape((2,src.shape[0]))
+        # dst/src are flipped in PyG
+        return torch.concat([dst,src]).reshape((2,src.shape[0]))
     
+    def edge_feature_names(self) -> List[str]:
+        return self._feature_names
+
     def to(self, to_device: TorchDevice):
         return CudfEdgeStorage(
             dataframe=self._data, 
@@ -175,7 +224,8 @@ class CudfEdgeStorage(CudfStorage, EdgeStorage):
             reserved_keys=self._reserved_keys,
             src_col_name=self.__src_col_name,
             dst_col_name=self.__dst_col_name,
-            key=self.__key
+            key=self.__key,
+            cached_keys=self._cached_keys
         )
 
     def keys(self, *args):

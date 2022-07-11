@@ -175,11 +175,6 @@ class CuGraphData(BaseData, RemoteData):
                 sampled_y = sampled_y[noi_tensor]
             
             sampled_x = self.x[noi_tensor]
-            '''
-            sampled_x = torch.from_dlpack(
-                self.__node_storage._data[self.__node_storage._feature_names].iloc[nodes_of_interest.to_cupy(dtype='int32')].to_cupy(dtype='float32').toDlpack()
-            )
-            '''
 
             iloc_end = datetime.now()
             print('iloc time:', (iloc_end - iloc_start).total_seconds())

@@ -8,6 +8,7 @@ from torch import device as TorchDevice
 from torch_geometric.data.storage import EdgeStorage, NodeStorage
 
 import cudf
+import cupy
 
 
 class CudfStorage():
@@ -27,7 +28,7 @@ class CudfStorage():
         self.__device = device
         self.__reserved_keys = list(reserved_keys)
         self.__cached_keys = list(cached_keys)
-        self.__x = None
+        self.__x_cupy = None
         self.__feature_names=None
     
     @property
@@ -54,7 +55,8 @@ class CudfStorage():
             self._data, 
             device=to_device, 
             parent=self._parent(), 
-            reserved_keys=self.__reserved_keys
+            reserved_keys=self.__reserved_keys,
+            cached_keys=self.__cached_keys
         )
     
     def __getattr__(self, key:str) -> Any:
@@ -72,24 +74,30 @@ class CudfStorage():
             return self.__dict__['__' + key]
 
         elif key == 'x':
-            if self.__x is None:
-                all_keys = list(self._data.columns)
-                for k in self.__reserved_keys + ['y']:
-                    if k in list(all_keys):
-                        all_keys.remove(k)
-                
-                x = torch.from_dlpack(self._data[all_keys].to_cupy(dtype='float32').toDlpack())
-                if self.__device != x.device:
-                    x = x.to(self.__device)
-                if 'x' in self.__cached_keys:
-                    self.__x = x
-                return x
-            return self.__x
+            x = torch.from_dlpack(self._x_cupy.toDlpack())
+            if self.__device != x.device:
+                x = x.to(self.__device)
+            return x
 
         raise AttributeError(key)
     
     def __getitem__(self, key:str) -> Any:
         return getattr(self, key)
+
+    @property
+    def _x_cupy(self) -> cupy.array:
+        if self.__x_cupy is None:
+            all_keys = list(self._data.columns)
+            for k in self.__reserved_keys + ['y']:
+                if k in list(all_keys):
+                    all_keys.remove(k)
+            
+            x_cupy = self._data[all_keys].to_cupy(dtype='float32')
+            if 'x' in self.__cached_keys:
+                self.__x_cupy = x_cupy
+            return x_cupy
+        else:
+            return self.__x_cupy
 
     @property
     def shape(self) -> tuple:

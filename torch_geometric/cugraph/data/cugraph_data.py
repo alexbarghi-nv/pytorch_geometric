@@ -17,6 +17,7 @@ from cugraph import Graph
 from cugraph.experimental import PropertyGraph
 from datetime import datetime
 
+from numba import cuda as ncuda
 
 class CuGraphData(BaseData, RemoteData):
     reserved_keys = [
@@ -32,8 +33,11 @@ class CuGraphData(BaseData, RemoteData):
         super().__init__()
         
         is_property_graph = isinstance(graph, PropertyGraph)
-        if is_property_graph and graph._EXPERIMENTAL__PropertyGraph__vertex_prop_dataframe.index.name != PropertyGraph.vertex_col_name:
-            graph._EXPERIMENTAL__PropertyGraph__vertex_prop_dataframe = graph._EXPERIMENTAL__PropertyGraph__vertex_prop_dataframe.set_index(PropertyGraph.vertex_col_name)
+        if is_property_graph:
+            if graph._EXPERIMENTAL__PropertyGraph__vertex_prop_dataframe.index.name != PropertyGraph.vertex_col_name:
+                graph._EXPERIMENTAL__PropertyGraph__vertex_prop_dataframe = graph._EXPERIMENTAL__PropertyGraph__vertex_prop_dataframe.set_index(PropertyGraph.vertex_col_name)
+            
+            graph._EXPERIMENTAL__PropertyGraph__vertex_prop_dataframe = graph._EXPERIMENTAL__PropertyGraph__vertex_prop_dataframe.fillna(0)
 
         if node_storage is None:
             self.__node_storage = CudfNodeStorage(
@@ -42,7 +46,7 @@ class CuGraphData(BaseData, RemoteData):
                         cudf.Series(cupy.arange(graph.number_of_vertices()),
                         name=PropertyGraph.vertex_col_name)
                     ),
-                device=device, 
+                device=device,
                 parent=self, 
                 reserved_keys=CuGraphData.reserved_keys,
                 vertex_col_name=PropertyGraph.vertex_col_name,
@@ -103,7 +107,16 @@ class CuGraphData(BaseData, RemoteData):
         print(data.num_nodes)
         print(data.num_edges)
         return self
-    
+
+    @ncuda.jit
+    def select(A, B, I):
+        i, j = ncuda.grid(2)
+        stride_i, stride_j = ncuda.gridsize(2)
+        for irow in range(i, I.shape[0], stride_i):
+            for icol in range(j, B.shape[1], stride_j):
+                B[irow, icol] = A[I[irow], icol]
+
+    @torch.no_grad()
     def neighbor_sample(
             self,
             index: Tensor,
@@ -153,19 +166,35 @@ class CuGraphData(BaseData, RemoteData):
             replace
         )
 
+        VERBOSE = False
+
         end_time = datetime.now()
         td = end_time - start_time
-        print('first half', td.total_seconds())
-        print('sampling', (end_time - sampling_start).total_seconds())
+        if VERBOSE:
+            print('first half', td.total_seconds())
+            print('sampling', (end_time - sampling_start).total_seconds())
 
         start_time = datetime.now()
 
-        nodes_of_interest = cudf.concat([sampling_results.destinations, sampling_results.sources]).unique()
-        noi_tensor = torch.from_dlpack(nodes_of_interest.astype('long').to_dlpack())
+        noi_start = datetime.now()
+        nodes_of_interest = cudf.concat([sampling_results.destinations, sampling_results.sources]).unique().to_cupy(dtype='long')
+        noi_tensor = torch.from_dlpack(nodes_of_interest.toDlpack())
+        noi_end = datetime.now()
+        if VERBOSE:
+            print('noi time:', (noi_end - noi_start).total_seconds())
 
-        renumber_df = cudf.Series(cudf.RangeIndex(len(nodes_of_interest)), index=nodes_of_interest)
-        src = torch.from_dlpack(renumber_df[sampling_results.sources].to_cupy(dtype='long').toDlpack())
-        dst = torch.from_dlpack(renumber_df[sampling_results.destinations].to_cupy(dtype='long').toDlpack())
+        renumber_start = datetime.now()
+        rda = cupy.stack([nodes_of_interest, cupy.arange(len(nodes_of_interest), dtype='long')], axis=-1)
+        rda = cupy.sort(rda,axis=0)
+
+        ixe = cupy.searchsorted(rda[:,0], cupy.concatenate([sampling_results.destinations.to_cupy(), sampling_results.sources.to_cupy()]))
+        eix = rda[ixe,1].reshape((2, len(sampling_results.sources)))
+
+        ei = torch.from_dlpack(eix.toDlpack())
+        
+        renumber_end = datetime.now()
+        if VERBOSE:
+            print('renumber time:', (renumber_end - renumber_start).total_seconds())
 
         if is_property_graph:
             iloc_start = datetime.now()
@@ -173,15 +202,34 @@ class CuGraphData(BaseData, RemoteData):
             sampled_y = self.y
             if sampled_y is not None:
                 sampled_y = sampled_y[noi_tensor]
+                #sampled_y = torch.from_dlpack(self.__node_storage.y[nodes_of_interest].toDlpack())
+
             
-            sampled_x = self.x[noi_tensor]
+            #sampled_x = self.x[noi_tensor]
+            #sampled_x = torch.from_dlpack(self.__node_storage._data[self.__node_storage._feature_names].to_cupy()[nodes_of_interest].toDlpack())
+            cupy_start = datetime.now()
+            A = self.__node_storage._x_cupy
+            cupy_end = datetime.now()
+            if VERBOSE:
+                print('cupy time:', (cupy_end - cupy_start).total_seconds())
+            B = cupy.empty((len(nodes_of_interest), A.shape[1]), dtype='float32')
+            I = nodes_of_interest
+            kernel_start = datetime.now()
+            CuGraphData.select[128,1024](A, B, I)
+            kernel_end = datetime.now()
+            if VERBOSE:
+                print('kernel time:', (kernel_end - kernel_start).total_seconds())
+            sampled_x = torch.from_dlpack(B.toDlpack())
+    
+            #CuGraphData.select(self.__node_storage._data[self.__node_storage._feature_names].to_cupy(), B, nodes_of_interest.to_cupy())
 
             iloc_end = datetime.now()
-            print('iloc time:', (iloc_end - iloc_start).total_seconds())
+            if VERBOSE:
+                print('iloc time:', (iloc_end - iloc_start).total_seconds())
 
             data = Data(
                 x=sampled_x, 
-                edge_index=torch.concat([dst,src]).reshape((2,src.shape[0])),
+                edge_index=ei,
                 edge_attr=None,
                 y=sampled_y
             )
@@ -189,14 +237,15 @@ class CuGraphData(BaseData, RemoteData):
         else:
             data = Data(
                 x=None,
-                edge_index=torch.concat([dst,src]).reshape((2,src.shape[0])),
+                edge_index=ei,
                 edge_attr=None,
                 y=None
             )
 
         end_time = datetime.now()
         td = end_time - start_time
-        print('second half', td.total_seconds())
+        if VERBOSE:
+            print('second half', td.total_seconds())
 
         return data
 

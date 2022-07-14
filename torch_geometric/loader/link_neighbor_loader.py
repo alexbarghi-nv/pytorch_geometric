@@ -53,7 +53,6 @@ class LinkNeighborSampler(NeighborSampler):
         return edge_label_index, edge_label
 
     def __call__(self, query: List[Tuple[Tensor]]):
-        print('in call')
         query = [torch.tensor(s) for s in zip(*query)]
         if len(query) == 2:
             edge_label_index = torch.stack(query, dim=0)
@@ -68,7 +67,6 @@ class LinkNeighborSampler(NeighborSampler):
         if issubclass(self.data_cls, (Data, RemoteData)):
             query_nodes = edge_label_index.view(-1)
             query_nodes, reverse = query_nodes.unique(return_inverse=True)
-            print('query_nodes', query_nodes.shape)
             edge_label_index = reverse.view(2, -1)
 
             if issubclass(self.data_cls, RemoteData):

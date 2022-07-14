@@ -29,7 +29,7 @@ class CuGraphData(BaseData, RemoteData):
         PropertyGraph.vertex_id_col_name,
         PropertyGraph.weight_col_name
     ] 
-    def __init__(self, graph:Union[Graph,PropertyGraph], device:TorchDevice=TorchDevice('cpu'), node_storage:CudfNodeStorage=None, edge_storage:CudfEdgeStorage=None, **kwargs):
+    def __init__(self, graph:Union[Graph,PropertyGraph], device:TorchDevice=TorchDevice('cpu'), node_storage:CudfNodeStorage=None, edge_storage:CudfEdgeStorage=None, reserved_keys=[], **kwargs):
         super().__init__()
         
         is_property_graph = isinstance(graph, PropertyGraph)
@@ -48,7 +48,7 @@ class CuGraphData(BaseData, RemoteData):
                     ),
                 device=device,
                 parent=self, 
-                reserved_keys=CuGraphData.reserved_keys,
+                reserved_keys=CuGraphData.reserved_keys + reserved_keys,
                 vertex_col_name=PropertyGraph.vertex_col_name,
                 **kwargs
             )
@@ -60,7 +60,7 @@ class CuGraphData(BaseData, RemoteData):
                 dataframe=graph._edge_prop_dataframe if is_property_graph else graph.edgelist_df, 
                 device=device, 
                 parent=self, 
-                reserved_keys=CuGraphData.reserved_keys,
+                reserved_keys=CuGraphData.reserved_keys + reserved_keys,
                 src_col_name=PropertyGraph.src_col_name if is_property_graph else 'src',
                 dst_col_name=PropertyGraph.dst_col_name if is_property_graph else 'dst',
                 **kwargs

@@ -53,16 +53,22 @@ class LinkNeighborSampler(NeighborSampler):
         return edge_label_index, edge_label
 
     def __call__(self, query: List[Tuple[Tensor]]):
-        query = [torch.tensor(s) for s in zip(*query)]
-        if len(query) == 2:
-            edge_label_index = torch.stack(query, dim=0)
-            edge_label = None
+        if issubclass(self.data_cls, torch.utils.data.IterableDataset):
+            query = list(*query)
+            print(query[0])
+            edge_label_index, edge_label = self._create_label(*query)
         else:
-            edge_label_index = torch.stack(query[:2], dim=0)
-            edge_label = query[2]
+            query = [torch.tensor(s) for s in zip(*query)]
+            if len(query) == 2:
+                edge_label_index = torch.stack(query, dim=0)
+                edge_label = None
+            else:
+                edge_label_index = torch.stack(query[:2], dim=0)
+                edge_label = query[2]
 
-        edge_label_index, edge_label = self._create_label(
-            edge_label_index, edge_label)
+            print(edge_label_index)
+            edge_label_index, edge_label = self._create_label(
+                edge_label_index, edge_label)
 
         if issubclass(self.data_cls, (Data, RemoteData)):
             query_nodes = edge_label_index.view(-1)
@@ -250,6 +256,7 @@ class LinkNeighborLoader(torch.utils.data.DataLoader):
         transform: Callable = None,
         is_sorted: bool = False,
         neighbor_sampler: Optional[LinkNeighborSampler] = None,
+        batch_size=None,
         **kwargs,
     ):
         # Remove for PyTorch Lightning:
@@ -285,8 +292,15 @@ class LinkNeighborLoader(torch.utils.data.DataLoader):
                 share_memory=kwargs.get('num_workers', 0) > 0,
             )
 
-        super().__init__(Dataset(edge_label_index, edge_label),
-                         collate_fn=self.neighbor_sampler, **kwargs)
+        if isinstance(data, torch.utils.data.IterableDataset):
+            if batch_size is not None:
+                raise ValueError('batch_size must be None if using an iterable dataset')
+            dataset = data
+        else:
+            dataset = Dataset(edge_label_index, edge_label)
+        super().__init__(dataset,
+                         collate_fn=self.neighbor_sampler,
+                         batch_size=batch_size, **kwargs)
 
     def transform_fn(self, out: Any) -> Union[Data, HeteroData]:
         if isinstance(self.data, (Data, RemoteData)):

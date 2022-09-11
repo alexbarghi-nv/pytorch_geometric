@@ -30,9 +30,6 @@ import torch
 from torch import Tensor
 from torch_sparse import SparseTensor
 
-from torch_geometric.sampler.utils import remap_keys
-from torch_geometric.sampler.base import HeteroSamplerOutput
-
 from torch_geometric.typing import Adj, EdgeTensorType, EdgeType, OptTensor
 from torch_geometric.utils.mixin import CastMixin
 
@@ -360,8 +357,8 @@ class GraphStore:
             for key in edge_types
         }
 
-        row_dict = remap_keys(row_dict, to_rel_type)
-        colptr_dict = remap_keys(col_dict, to_rel_type)
+        row_dict = {to_rel_type[r]: v for r,v in row_dict.items()}
+        colptr_dict = {to_rel_type[c]: v for c,v in colptr_dict.items()}
 
         if _WITH_PYG_LIB:
             # TODO (matthias) Add `disjoint` option to `NeighborSampler`
@@ -409,22 +406,20 @@ class GraphStore:
                     row_dict,
                     seed,  # seed_dict
                     num_neighbors,
-                    kwargs.get('node_time_dict', self.node_time_dict),
+                    node_time_dict,
                     num_hops,
                     replace,
                     directed,
                 )
             node, row, col, edge, batch = out + (None, )
 
-        # FIXME permute the data
+        # permute the data
+        for edge_type, t in perm_dict:
+            torch.index_select(row[edge_type], 0, t, out=row[edge_type])
+            torch.index_select(col[edge_type], 0, t, out=col[edge_type])
+            torch.index_select(edge[edge_type], 0, t, out=edge[edge_type])
 
-        return HeteroSamplerOutput(
-            node=node,
-            row=remap_keys(row, to_edge_type),
-            col=remap_keys(col, to_edge_type),
-            edge=remap_keys(edge, to_edge_type),
-            batch=batch,
-        )
+        return (node, row, col, edge, batch)
 
 # Data and HeteroData utilities ###############################################
 

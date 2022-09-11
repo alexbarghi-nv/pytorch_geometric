@@ -350,20 +350,20 @@ class GraphStore:
                                disjoint,
                                return_edge_id):
     
-        col_dict, row_dict, perm_dict = self.csc(store=True)
-        to_rel_type = {key: '__'.join(key) for key in self.edge_types}
-        to_edge_type = {
-            '__'.join(key): key
-            for key in edge_types
-        }
+        row_dict, colptr_dict, perm_dict = self.csc(store=True)
+        edge_types = list(
+            set(edge_attr.edge_type for edge_attr in self.get_all_edge_attrs())
+        )
+        to_rel_type = {key: '__'.join(key) for key in edge_types}
 
         row_dict = {to_rel_type[r]: v for r,v in row_dict.items()}
         colptr_dict = {to_rel_type[c]: v for c,v in colptr_dict.items()}
+        perm_dict = {to_rel_type[e]: v for e,v in perm_dict.items()}
 
         if _WITH_PYG_LIB:
             # TODO (matthias) Add `disjoint` option to `NeighborSampler`
             # TODO (matthias) `return_edge_id` if edge features present
-            disjoint = self.node_time_dict is not None
+            
             out = torch.ops.pyg.hetero_neighbor_sample_cpu(
                 node_types,
                 edge_types,
@@ -414,10 +414,11 @@ class GraphStore:
             node, row, col, edge, batch = out + (None, )
 
         # permute the data
-        for edge_type, t in perm_dict:
-            torch.index_select(row[edge_type], 0, t, out=row[edge_type])
-            torch.index_select(col[edge_type], 0, t, out=col[edge_type])
-            torch.index_select(edge[edge_type], 0, t, out=edge[edge_type])
+        for edge_type, p in perm_dict.items():
+            if p is not None:
+                row[edge_type] = p[row[edge_type]]
+                col[edge_type] = p[col[edge_type]]
+                edge[edge_type] = p[edge[edge_type]]
 
         return (node, row, col, edge, batch)
 

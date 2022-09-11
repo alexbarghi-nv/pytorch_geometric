@@ -166,8 +166,6 @@ class NeighborSampler(BaseSampler):
                 for key in self.edge_types
             }
 
-            self.row_dict = remap_keys(row_dict, self.to_rel_type)
-            self.colptr_dict = remap_keys(colptr_dict, self.to_rel_type)
             self.num_neighbors = remap_keys(self.num_neighbors,
                                             self.to_rel_type)
 
@@ -206,7 +204,10 @@ class NeighborSampler(BaseSampler):
         # TODO(manan): remote backends only support heterogeneous graphs for
         # now:
         if self.data_cls == 'custom':
-            self.graph_store.hetero_neighbor_sample(
+            # TODO (matthias) Add `disjoint` option to `NeighborSampler`
+            # TODO (matthias) `return_edge_id` if edge features present
+            disjoint = self.node_time_dict is not None
+            out = self.graph_store.hetero_neighbor_sample(
                 self.node_types,
                 self.edge_types,
                 seed,
@@ -216,13 +217,9 @@ class NeighborSampler(BaseSampler):
                 self.replace,
                 self.directed,
                 disjoint,
-                True
+                True # return_edge_id
             )
             node, row, col, edge, batch = out
-            if disjoint:
-                node = {k: v.t().contiguous() for k, v in node.items()}
-                batch = {k: v[0] for k, v in node.items()}
-                node = {k: v[1] for k, v in node.items()}
             
             return HeteroSamplerOutput(
                 node=node,

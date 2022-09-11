@@ -157,19 +157,16 @@ class NeighborSampler(BaseSampler):
             assert input_type is not None
             self.input_type = input_type
 
-            # Obtain CSC representations for in-memory sampling:
-            row_dict, colptr_dict, perm_dict = graph_store.csc()
+            self.feature_store = feature_store
+            self.graph_store = graph_store
 
             self.to_rel_type = {key: '__'.join(key) for key in self.edge_types}
             self.to_edge_type = {
                 '__'.join(key): key
                 for key in self.edge_types
             }
-            self.row_dict = remap_keys(row_dict, self.to_rel_type)
-            self.colptr_dict = remap_keys(colptr_dict, self.to_rel_type)
-            self.num_neighbors = remap_keys(self.num_neighbors,
-                                            self.to_rel_type)
-            self.perm_dict = perm_dict
+            # The custom store must permute the data itself.
+            self.perm_dict = None
 
         else:
             raise TypeError(f"'{self.__class__.__name__}'' found invalid "
@@ -202,7 +199,34 @@ class NeighborSampler(BaseSampler):
 
         # TODO(manan): remote backends only support heterogeneous graphs for
         # now:
-        if self.data_cls == 'custom' or issubclass(self.data_cls, HeteroData):
+        if self.data_cls == 'custom':
+            self.graph_store.hetero_neighbor_sample(
+                self.node_types,
+                self.edge_types,
+                seed,
+                self.num_neighbors,
+                self.num_hops,
+                kwargs.get('node_time_dict', self.node_time_dict),
+                self.replace,
+                self.directed,
+                disjoint,
+                True
+            )
+            node, row, col, edge, batch = out + (None, )
+            if disjoint:
+                node = {k: v.t().contiguous() for k, v in node.items()}
+                batch = {k: v[0] for k, v in node.items()}
+                node = {k: v[1] for k, v in node.items()}
+            
+            return HeteroSamplerOutput(
+                node=node,
+                row=remap_keys(row, self.to_edge_type),
+                col=remap_keys(col, self.to_edge_type),
+                edge=remap_keys(edge, self.to_edge_type),
+                batch=batch,
+            )
+
+        elif issubclass(self.data_cls, HeteroData):
             if _WITH_PYG_LIB:
                 # TODO (matthias) Add `disjoint` option to `NeighborSampler`
                 # TODO (matthias) `return_edge_id` if edge features present

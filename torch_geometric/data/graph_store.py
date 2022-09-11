@@ -17,8 +17,6 @@ concatenate all metadata values with an edge index and use this as a unique
 index in a KV store. More complicated implementations may choose to partition
 the graph in interesting manners based on the provided metadata.
 
-Major TODOs for future implementation:
-* `sample` behind the graph store interface
 """
 import copy
 import warnings
@@ -32,8 +30,17 @@ import torch
 from torch import Tensor
 from torch_sparse import SparseTensor
 
+from torch_geometric.sampler.utils import remap_keys
+from torch_geometric.sampler.base import HeteroSamplerOutput
+
 from torch_geometric.typing import Adj, EdgeTensorType, EdgeType, OptTensor
 from torch_geometric.utils.mixin import CastMixin
+
+try:
+    import pyg_lib  # noqa
+    _WITH_PYG_LIB = True
+except ImportError:
+    _WITH_PYG_LIB = False
 
 # The output of converting between two types in the GraphStore is a Tuple of
 # dictionaries: row, col, and perm. The dictionaries are keyed by the edge
@@ -334,6 +341,90 @@ class GraphStore:
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}()'
 
+    def hetero_neighbor_sample(self,
+                               node_types,
+                               edge_types,
+                               seed,
+                               num_neighbors,
+                               num_hops,
+                               node_time_dict,
+                               replace,
+                               directed,
+                               disjoint,
+                               return_edge_id):
+    
+        col_dict, row_dict, perm_dict = self.csc(store=True)
+        to_rel_type = {key: '__'.join(key) for key in self.edge_types}
+        to_edge_type = {
+            '__'.join(key): key
+            for key in edge_types
+        }
+
+        row_dict = remap_keys(row_dict, to_rel_type)
+        colptr_dict = remap_keys(col_dict, to_rel_type)
+
+        if _WITH_PYG_LIB:
+            # TODO (matthias) Add `disjoint` option to `NeighborSampler`
+            # TODO (matthias) `return_edge_id` if edge features present
+            disjoint = self.node_time_dict is not None
+            out = torch.ops.pyg.hetero_neighbor_sample_cpu(
+                node_types,
+                edge_types,
+                colptr_dict,
+                row_dict,
+                seed,  # seed_dict
+                num_neighbors,
+                node_time_dict,
+                True,  # csc
+                replace,
+                directed,
+                disjoint,
+                return_edge_id
+            )
+            row, col, node, edge, batch = out + (None, )
+            if disjoint:
+                node = {k: v.t().contiguous() for k, v in node.items()}
+                batch = {k: v[0] for k, v in node.items()}
+                node = {k: v[1] for k, v in node.items()}
+
+        else:
+            if node_time_dict is None:
+                out = torch.ops.torch_sparse.hetero_neighbor_sample(
+                    node_types,
+                    edge_types,
+                    colptr_dict,
+                    row_dict,
+                    seed,  # seed_dict
+                    num_neighbors,
+                    num_hops,
+                    replace,
+                    directed,
+                )
+            else:
+                fn = torch.ops.torch_sparse.hetero_temporal_neighbor_sample
+                out = fn(
+                    node_types,
+                    edge_types,
+                    colptr_dict,
+                    row_dict,
+                    seed,  # seed_dict
+                    num_neighbors,
+                    kwargs.get('node_time_dict', self.node_time_dict),
+                    num_hops,
+                    replace,
+                    directed,
+                )
+            node, row, col, edge, batch = out + (None, )
+
+        # FIXME permute the data
+
+        return HeteroSamplerOutput(
+            node=node,
+            row=remap_keys(row, to_edge_type),
+            col=remap_keys(col, to_edge_type),
+            edge=remap_keys(edge, to_edge_type),
+            batch=batch,
+        )
 
 # Data and HeteroData utilities ###############################################
 

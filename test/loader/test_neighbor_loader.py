@@ -402,8 +402,6 @@ def test_temporal_custom_neighbor_loader_on_cora(get_dataset, FeatureStore,
     )
 
     for batch1, batch2 in zip(loader1, loader2):
-        print(batch1['paper'].time)
-        print(batch2['paper'].time)
         assert torch.equal(batch1['paper'].time, batch2['paper'].time)
 
 
